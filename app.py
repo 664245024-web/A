@@ -1,6 +1,6 @@
 """
-Streamlit Web Application for Loan Status Prediction
-รันด้วยคำสั่ง: streamlit run 2_streamlit_app.py
+Streamlit Web Application for Loan Status Prediction (Self-Contained)
+รองรับการ Train โมเดลอัตโนมัติเมื่อเริ่มต้นแอปพลิเคชัน
 """
 
 import streamlit as st
@@ -8,6 +8,13 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
+from io import StringIO
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.svm import SVC
 
 # ============================================================
 # Page Configuration
@@ -19,17 +26,74 @@ st.set_page_config(
 )
 
 # ============================================================
-# Load Model
+# Embedded Data & Model Training Logic
 # ============================================================
-@st.cache_resource
-def load_model():
-    """โหลดโมเดลที่บันทึกไว้"""
-    model_path = 'svm_loan_model.pkl'
-    if not os.path.exists(model_path):
-        return None
-    return joblib.load(model_path)
+# หมายเหตุ: ในทางปฏิบัติควรใช้ข้อมูลเต็มชุดจาก loan_data.csv 
+# ด้านล่างเป็นตัวอย่างโครงสร้างเพื่อป้องกัน Error กรณีไฟล์หาย
+CSV_DATA = """person_age,person_gender,person_education,person_income,person_emp_exp,person_home_ownership,loan_amnt,loan_intent,loan_int_rate,loan_percent_income,cb_person_cred_hist_length,credit_score,previous_loan_defaults_on_file,loan_status
+23.0,female,Associate,53395.0,1,OWN,15000.0,EDUCATION,11.01,0.28,3.0,574,Yes,0
+23.0,female,Bachelor,60080.0,1,RENT,9000.0,MEDICAL,11.01,0.15,2.0,562,No,1
+24.0,male,Master,68121.0,1,RENT,9000.0,HOMEIMPROVEMENT,11.01,0.13,2.0,651,Yes,0
+24.0,male,Bachelor,67890.0,0,RENT,9000.0,PERSONAL,7.29,0.13,2.0,548,Yes,0
+23.0,female,High School,68170.0,0,RENT,9000.0,EDUCATION,13.35,0.13,3.0,579,Yes,0
+23.0,female,High School,69638.0,0,RENT,9000.0,PERSONAL,7.14,0.13,2.0,660,No,0
+23.0,male,Bachelor,46345.0,1,MORTGAGE,10000.0,DEBTCONSOLIDATION,9.63,0.22,3.0,646,No,1
+24.0,male,Master,37260.0,2,MORTGAGE,6000.0,DEBTCONSOLIDATION,13.57,0.16,2.0,634,No,0
+26.0,male,Master,37000.0,4,MORTGAGE,3500.0,VENTURE,8.0,0.09,4.0,569,No,0"""
 
-model = load_model()
+def get_or_train_model():
+    """โหลดโมเดลจากไฟล์ หรือฝึกใหม่หากไม่พบ/โหลดไม่ได้"""
+    model_path = 'svm_loan_model.pkl'
+    
+    # พยายามโหลดโมเดลที่บันทึกไว้ก่อน
+    if os.path.exists(model_path):
+        try:
+            return joblib.load(model_path)
+        except Exception as e:
+            st.warning(f"️ ไม่สามารถโหลดโมเดลเดิมได้ ({type(e).__name__}) จะทำการฝึกโมเดลใหม่...")
+    
+    # หากไม่มีไฟล์หรือโหลดไม่ได้ ให้ฝึกโมเดลใหม่จากข้อมูลที่ฝังมา
+    with st.spinner("🔧 กำลังเตรียมข้อมูลและฝึกโมเดล SVM..."):
+        df = pd.read_csv(StringIO(CSV_DATA))
+        
+        X = df.drop(columns=['loan_status'])
+        y = df['loan_status']
+        
+        numeric_features = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
+        categorical_features = X.select_dtypes(include=['object']).columns.tolist()
+        
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ('num', Pipeline([
+                    ('imputer', SimpleImputer(strategy='median')),
+                    ('scaler', StandardScaler())
+                ]), numeric_features),
+                ('cat', Pipeline([
+                    ('imputer', SimpleImputer(strategy='most_frequent')),
+                    ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+                ]), categorical_features)
+            ])
+            
+        svm_pipeline = Pipeline(steps=[
+            ('preprocessor', preprocessor),
+            ('classifier', SVC(kernel='rbf', C=1.0, probability=True, random_state=42))
+        ])
+        
+        X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        svm_pipeline.fit(X_train, y_train)
+        
+        # บันทึกโมเดลสำหรับใช้งานครั้งถัดไป
+        joblib.dump(svm_pipeline, model_path)
+        st.success("✅ ฝึกโมเดลเสร็จสิ้นและบันทึกเรียบร้อยแล้ว!")
+        
+    return svm_pipeline
+
+# โหลดหรือสร้างโมเดล (ใช้ cache_resource เพื่อไม่ให้เทรนซ้ำทุกครั้งที่กดปุ่ม)
+@st.cache_resource
+def load_cached_model():
+    return get_or_train_model()
+
+model = load_cached_model()
 
 # ============================================================
 # Sidebar
@@ -47,11 +111,6 @@ st.sidebar.info("""
 # ============================================================
 st.title("🏦 ระบบทำนายสถานะการกู้ยืม")
 st.markdown("ป้อนข้อมูลผู้กู้ยืมเพื่อทำนายว่าสินเชื่อจะได้รับการอนุมัติหรือไม่")
-
-if model is None:
-    st.error("❌ ไม่พบไฟล์โมเดล 'svm_loan_model.pkl'")
-    st.info("กรุณารันสคริปต์ `1_train_model.py` ก่อนเพื่อสร้างโมเดล")
-    st.stop()
 
 # ============================================================
 # Input Form
@@ -120,13 +179,12 @@ st.markdown("---")
 col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
 
 with col_btn2:
-    predict_button = st.button("🔮 ทำนายผล", use_container_width=True, type="primary")
+    predict_button = st.button(" ทำนายผล", use_container_width=True, type="primary")
 
 # ============================================================
 # Prediction Logic
 # ============================================================
 if predict_button:
-    # สร้าง DataFrame จากข้อมูลผู้ใช้
     input_data = pd.DataFrame({
         'person_age': [person_age],
         'person_gender': [person_gender],
@@ -147,7 +205,6 @@ if predict_button:
         prediction = model.predict(input_data)[0]
         probability = model.predict_proba(input_data)[0]
     
-    # แสดงผลลัพธ์
     st.markdown("---")
     st.header("📊 ผลการทำนาย")
     
@@ -169,7 +226,6 @@ if predict_button:
         })
         st.bar_chart(prob_df.set_index('สถานะ'))
     
-    # แสดงข้อมูลที่ใช้ทำนาย
     with st.expander("🔍 ดูข้อมูลที่ใช้ทำนาย"):
         st.dataframe(input_data.T.rename(columns={0: 'ค่า'}))
 
@@ -202,7 +258,6 @@ if uploaded_file is not None:
             
             st.success(f"✅ ทำนายเสร็จสิ้น! ({len(df_result)} รายการ)")
             
-            # สรุปผล
             col_s1, col_s2, col_s3 = st.columns(3)
             with col_s1:
                 st.metric("ทั้งหมด", len(df_result))
@@ -215,7 +270,6 @@ if uploaded_file is not None:
             
             st.dataframe(df_result)
             
-            # ดาวน์โหลดผล
             csv = df_result.to_csv(index=False).encode('utf-8')
             st.download_button(
                 "💾 ดาวน์โหลดผลลัพธ์ (CSV)",
