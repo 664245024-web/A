@@ -1,119 +1,103 @@
+"""
+Streamlit Web Application for Loan Status Prediction (Self-Contained)
+รองรับการ Train โมเดลอัตโนมัติเมื่อเริ่มต้นแอปพลิเคชัน
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
+import joblib
+import os
+from io import StringIO
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, classification_report
-import joblib
-from io import StringIO
 
+# ============================================================
+# Page Configuration
+# ============================================================
 st.set_page_config(
-    page_title="Loan Prediction - SVM",
+    page_title="Loan Status Prediction - SVM",
     page_icon="💰",
     layout="wide"
 )
 
-# ข้อมูล CSV (ใส่ข้อมูลทั้งหมดของคุณที่นี่)
+# ============================================================
+# Embedded Data & Model Training Logic
+# ============================================================
+# หมายเหตุ: ในทางปฏิบัติควรใช้ข้อมูลเต็มชุดจาก loan_data.csv 
+# ด้านล่างเป็นตัวอย่างโครงสร้างเพื่อป้องกัน Error กรณีไฟล์หาย
 CSV_DATA = """person_age,person_gender,person_education,person_income,person_emp_exp,person_home_ownership,loan_amnt,loan_intent,loan_int_rate,loan_percent_income,cb_person_cred_hist_length,credit_score,previous_loan_defaults_on_file,loan_status
 23.0,female,Associate,53395.0,1,OWN,15000.0,EDUCATION,11.01,0.28,3.0,574,Yes,0
 23.0,female,Bachelor,60080.0,1,RENT,9000.0,MEDICAL,11.01,0.15,2.0,562,No,1
-... (ใส่ข้อมูลทั้งหมด) ..."""
+24.0,male,Master,68121.0,1,RENT,9000.0,HOMEIMPROVEMENT,11.01,0.13,2.0,651,Yes,0
+24.0,male,Bachelor,67890.0,0,RENT,9000.0,PERSONAL,7.29,0.13,2.0,548,Yes,0
+23.0,female,High School,68170.0,0,RENT,9000.0,EDUCATION,13.35,0.13,3.0,579,Yes,0
+23.0,female,High School,69638.0,0,RENT,9000.0,PERSONAL,7.14,0.13,2.0,660,No,0
+23.0,male,Bachelor,46345.0,1,MORTGAGE,10000.0,DEBTCONSOLIDATION,9.63,0.22,3.0,646,No,1
+24.0,male,Master,37260.0,2,MORTGAGE,6000.0,DEBTCONSOLIDATION,13.57,0.16,2.0,634,No,0
+26.0,male,Master,37000.0,4,MORTGAGE,3500.0,VENTURE,8.0,0.09,4.0,569,No,0"""
 
-@st.cache_resource
-def train_model():
-    """ฝึกโมเดล SVM"""
-    try:
-        # อ่านข้อมูล
+def get_or_train_model():
+    """โหลดโมเดลจากไฟล์ หรือฝึกใหม่หากไม่พบ/โหลดไม่ได้"""
+    model_path = 'svm_loan_model.pkl'
+    
+    # พยายามโหลดโมเดลที่บันทึกไว้ก่อน
+    if os.path.exists(model_path):
+        try:
+            return joblib.load(model_path)
+        except Exception as e:
+            st.warning(f"️ ไม่สามารถโหลดโมเดลเดิมได้ ({type(e).__name__}) จะทำการฝึกโมเดลใหม่...")
+    
+    # หากไม่มีไฟล์หรือโหลดไม่ได้ ให้ฝึกโมเดลใหม่จากข้อมูลที่ฝังมา
+    with st.spinner("🔧 กำลังเตรียมข้อมูลและฝึกโมเดล SVM..."):
         df = pd.read_csv(StringIO(CSV_DATA))
         
-        # แยก features และ target
-        X = df.drop('loan_status', axis=1)
+        X = df.drop(columns=['loan_status'])
         y = df['loan_status']
         
-        # แสดงการกระจายของข้อมูล
-        st.info(f"จำนวนข้อมูลทั้งหมด: {len(df)} รายการ")
-        st.write("การกระจายของ target variable:")
-        st.write(y.value_counts())
-        
-        # แยกประเภทคอลัมน์
         numeric_features = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
         categorical_features = X.select_dtypes(include=['object']).columns.tolist()
         
-        # สร้าง preprocessing pipeline
-        numeric_transformer = Pipeline(steps=[
-            ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', StandardScaler())
-        ])
-        
-        categorical_transformer = Pipeline(steps=[
-            ('imputer', SimpleImputer(strategy='most_frequent')),
-            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-        ])
-        
         preprocessor = ColumnTransformer(
             transformers=[
-                ('num', numeric_transformer, numeric_features),
-                ('cat', categorical_transformer, categorical_features)
-            ]
-        )
-        
-        # สร้างโมเดล SVM
-        model = Pipeline(steps=[
+                ('num', Pipeline([
+                    ('imputer', SimpleImputer(strategy='median')),
+                    ('scaler', StandardScaler())
+                ]), numeric_features),
+                ('cat', Pipeline([
+                    ('imputer', SimpleImputer(strategy='most_frequent')),
+                    ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+                ]), categorical_features)
+            ])
+            
+        svm_pipeline = Pipeline(steps=[
             ('preprocessor', preprocessor),
-            ('classifier', SVC(kernel='rbf', C=1.0, probability=True, random_state=42, class_weight='balanced'))
+            ('classifier', SVC(kernel='rbf', C=1.0, probability=True, random_state=42))
         ])
         
-        # แบ่งข้อมูล - แก้ไขปัญหา class imbalance
-        # ตรวจสอบว่ามี class ไหนบ้าง
-        class_counts = y.value_counts()
-        min_class_count = class_counts.min()
+        X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        svm_pipeline.fit(X_train, y_train)
         
-        st.write(f"Class น้อยที่สุดมี {min_class_count} ตัวอย่าง")
+        # บันทึกโมเดลสำหรับใช้งานครั้งถัดไป
+        joblib.dump(svm_pipeline, model_path)
+        st.success("✅ ฝึกโมเดลเสร็จสิ้นและบันทึกเรียบร้อยแล้ว!")
         
-        # เลือก test_size ให้เหมาะสม
-        if min_class_count < 10:
-            test_size = 0.1  # ใช้ 10% ถ้าข้อมูลน้อยมาก
-            stratify_param = None  # ไม่ใช้ stratify
-            st.warning("⚠️ ข้อมูลไม่สมดุลมาก จะไม่ใช้ stratified split")
-        elif min_class_count < 20:
-            test_size = 0.15
-            stratify_param = y
-        else:
-            test_size = 0.2
-            stratify_param = y
-        
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=42, stratify=stratify_param
-        )
-        
-        st.success(f"แบ่งข้อมูลสำเร็จ - Train: {len(X_train)}, Test: {len(X_test)}")
-        
-        # ฝึกโมเดล
-        model.fit(X_train, y_train)
-        
-        # ทดสอบโมเดล
-        y_pred = model.predict(X_test)
-        train_acc = accuracy_score(y_train, y_train)  # Always 1.0 for training
-        test_acc = accuracy_score(y_test, y_pred)
-        
-        st.write("### ผลการทดสอบโมเดล")
-        st.metric("Test Accuracy", f"{test_acc:.2%}")
-        st.write("Classification Report:")
-        st.text(classification_report(y_test, y_pred))
-        
-        return model, train_acc, test_acc
-        
-    except Exception as e:
-        st.error(f"ข้อผิดพลาดในการฝึกโมเดล: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
-        return None, 0, 0
+    return svm_pipeline
 
+# โหลดหรือสร้างโมเดล (ใช้ cache_resource เพื่อไม่ให้เทรนซ้ำทุกครั้งที่กดปุ่ม)
+@st.cache_resource
+def load_cached_model():
+    return get_or_train_model()
+
+model = load_cached_model()
+
+# ============================================================
 # Sidebar
+# ============================================================
 st.sidebar.title("💰 Loan Prediction App")
 st.sidebar.markdown("---")
 st.sidebar.info("""
@@ -122,93 +106,189 @@ st.sidebar.info("""
 **Target:** Loan Status (0=Approved, 1=Default)
 """)
 
-# หัวข้อหลัก
+# ============================================================
+# Main Title
+# ============================================================
 st.title("🏦 ระบบทำนายสถานะการกู้ยืม")
 st.markdown("ป้อนข้อมูลผู้กู้ยืมเพื่อทำนายว่าสินเชื่อจะได้รับการอนุมัติหรือไม่")
 
-# ฝึกหรือโหลดโมเดล
-with st.spinner("🔧 กำลังเตรียมโมเดล..."):
-    model, train_acc, test_acc = train_model()
+# ============================================================
+# Input Form
+# ============================================================
+st.header("📝 ข้อมูลผู้กู้ยืม")
 
-if model is not None:
-    st.success(f"✅ โมเดลพร้อมใช้งาน (Test Accuracy: {test_acc:.2%})")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    person_age = st.number_input("อายุ (Age)", min_value=18, max_value=100, value=25, step=1)
+    person_gender = st.selectbox("เพศ (Gender)", ["male", "female"])
+    person_education = st.selectbox(
+        "ระดับการศึกษา (Education)",
+        ["High School", "Associate", "Bachelor", "Master", "Doctorate"]
+    )
+    person_income = st.number_input(
+        "รายได้ต่อปี (Income)", min_value=0, value=50000, step=1000,
+        help="หน่วย: ดอลลาร์"
+    )
+
+with col2:
+    person_emp_exp = st.number_input(
+        "ปีประสบการณ์ทำงาน (Work Experience)",
+        min_value=0, max_value=50, value=3, step=1
+    )
+    person_home_ownership = st.selectbox(
+        "สถานะที่อยู่อาศัย (Home Ownership)",
+        ["RENT", "MORTGAGE", "OWN", "OTHER"]
+    )
+    loan_amnt = st.number_input(
+        "จำนวนเงินกู้ (Loan Amount)", min_value=0, value=10000, step=500
+    )
+    loan_intent = st.selectbox(
+        "วัตถุประสงค์การกู้ (Loan Intent)",
+        ["PERSONAL", "EDUCATION", "MEDICAL", "VENTURE",
+         "HOMEIMPROVEMENT", "DEBTCONSOLIDATION"]
+    )
+
+with col3:
+    loan_int_rate = st.number_input(
+        "อัตราดอกเบี้ย (%)", min_value=0.0, max_value=30.0,
+        value=10.0, step=0.1
+    )
+    loan_percent_income = st.number_input(
+        "สัดส่วนเงินกู้ต่อรายได้ (%)", min_value=0.0, max_value=1.0,
+        value=0.1, step=0.01,
+        help="เช่น 0.1 = 10% ของรายได้"
+    )
+    cb_person_cred_hist_length = st.number_input(
+        "ปีประวัติเครดิต (Credit History Length)",
+        min_value=0, max_value=50, value=5, step=1
+    )
+    credit_score = st.number_input(
+        "คะแนนเครดิต (Credit Score)",
+        min_value=300, max_value=850, value=650, step=10
+    )
+    previous_loan_defaults = st.selectbox(
+        "เคยผิดนัดชำระหนี้หรือไม่?",
+        ["No", "Yes"]
+    )
+
+# ============================================================
+# Prediction Button
+# ============================================================
+st.markdown("---")
+col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+
+with col_btn2:
+    predict_button = st.button(" ทำนายผล", use_container_width=True, type="primary")
+
+# ============================================================
+# Prediction Logic
+# ============================================================
+if predict_button:
+    input_data = pd.DataFrame({
+        'person_age': [person_age],
+        'person_gender': [person_gender],
+        'person_education': [person_education],
+        'person_income': [person_income],
+        'person_emp_exp': [person_emp_exp],
+        'person_home_ownership': [person_home_ownership],
+        'loan_amnt': [loan_amnt],
+        'loan_intent': [loan_intent],
+        'loan_int_rate': [loan_int_rate],
+        'loan_percent_income': [loan_percent_income],
+        'cb_person_cred_hist_length': [cb_person_cred_hist_length],
+        'credit_score': [credit_score],
+        'previous_loan_defaults_on_file': [previous_loan_defaults]
+    })
     
-    st.markdown("---")
-    st.header("📝 ข้อมูลผู้กู้ยืม")
-    
-    # ฟอร์มกรอกข้อมูล
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        person_age = st.number_input("อายุ (Age)", min_value=18, max_value=100, value=25, step=1)
-        person_gender = st.selectbox("เพศ (Gender)", ["male", "female"])
-        person_education = st.selectbox(
-            "ระดับการศึกษา (Education)",
-            ["High School", "Associate", "Bachelor", "Master", "Doctorate"]
-        )
-        person_income = st.number_input("รายได้ต่อปี (Income)", min_value=0, value=50000, step=1000)
-    
-    with col2:
-        person_emp_exp = st.number_input("ปีประสบการณ์ทำงาน", min_value=0, max_value=50, value=3, step=1)
-        person_home_ownership = st.selectbox("สถานะที่อยู่อาศัย", ["RENT", "MORTGAGE", "OWN", "OTHER"])
-        loan_amnt = st.number_input("จำนวนเงินกู้", min_value=0, value=10000, step=500)
-        loan_intent = st.selectbox(
-            "วัตถุประสงค์การกู้",
-            ["PERSONAL", "EDUCATION", "MEDICAL", "VENTURE", "HOMEIMPROVEMENT", "DEBTCONSOLIDATION"]
-        )
-    
-    with col3:
-        loan_int_rate = st.number_input("อัตราดอกเบี้ย (%)", min_value=0.0, max_value=30.0, value=10.0, step=0.1)
-        loan_percent_income = st.number_input("สัดส่วนเงินกู้ต่อรายได้", min_value=0.0, max_value=1.0, value=0.1, step=0.01)
-        cb_person_cred_hist_length = st.number_input("ปีประวัติเครดิต", min_value=0, max_value=50, value=5, step=1)
-        credit_score = st.number_input("คะแนนเครดิต", min_value=300, max_value=850, value=650, step=10)
-        previous_loan_defaults = st.selectbox("เคยผิดนัดชำระหนี้", ["No", "Yes"])
-    
-    # ปุ่มทำนาย
-    st.markdown("---")
-    if st.button("🔮 ทำนายผล", type="primary", use_container_width=True):
-        # สร้าง DataFrame จากข้อมูล
-        input_data = pd.DataFrame({
-            'person_age': [person_age],
-            'person_gender': [person_gender],
-            'person_education': [person_education],
-            'person_income': [person_income],
-            'person_emp_exp': [person_emp_exp],
-            'person_home_ownership': [person_home_ownership],
-            'loan_amnt': [loan_amnt],
-            'loan_intent': [loan_intent],
-            'loan_int_rate': [loan_int_rate],
-            'loan_percent_income': [loan_percent_income],
-            'cb_person_cred_hist_length': [cb_person_cred_hist_length],
-            'credit_score': [credit_score],
-            'previous_loan_defaults_on_file': [previous_loan_defaults]
-        })
-        
-        # ทำนาย
+    with st.spinner("กำลังประมวลผล..."):
         prediction = model.predict(input_data)[0]
         probability = model.predict_proba(input_data)[0]
-        
-        # แสดงผล
-        st.markdown("---")
-        st.header("📊 ผลการทำนาย")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if prediction == 0:
-                st.success("✅ **สินเชื่อได้รับการอนุมัติ (Approved)**")
-                st.metric("ความน่าจะเป็นที่จะอนุมัติ", f"{probability[0]*100:.2f}%")
-            else:
-                st.error("❌ **สินเชื่อไม่ได้รับการอนุมัติ / มีแนวโน้มผิดนัด (Default)**")
-                st.metric("ความน่าจะเป็นที่จะผิดนัด", f"{probability[1]*100:.2f}%")
-        
-        with col2:
-            st.subheader("📈 ความน่าจะเป็น")
-            prob_df = pd.DataFrame({
-                'สถานะ': ['Approved', 'Default'],
-                'ความน่าจะเป็น (%)': [probability[0]*100, probability[1]*100]
-            })
-            st.bar_chart(prob_df.set_index('สถานะ'))
+    
+    st.markdown("---")
+    st.header("📊 ผลการทำนาย")
+    
+    col_res1, col_res2 = st.columns(2)
+    
+    with col_res1:
+        if prediction == 0:
+            st.success("✅ สินเชื่อได้รับการอนุมัติ (Approved)")
+            st.metric("ความน่าจะเป็นที่จะอนุมัติ", f"{probability[0]*100:.2f}%")
+        else:
+            st.error("❌ สินเชื่อไม่ได้รับการอนุมัติ / มีแนวโน้มผิดนัด (Default)")
+            st.metric("ความน่าจะเป็นที่จะผิดนัด", f"{probability[1]*100:.2f}%")
+    
+    with col_res2:
+        st.subheader("📈 ความน่าจะเป็น")
+        prob_df = pd.DataFrame({
+            'สถานะ': ['Approved', 'Default'],
+            'ความน่าจะเป็น (%)': [probability[0]*100, probability[1]*100]
+        })
+        st.bar_chart(prob_df.set_index('สถานะ'))
+    
+    with st.expander("🔍 ดูข้อมูลที่ใช้ทำนาย"):
+        st.dataframe(input_data.T.rename(columns={0: 'ค่า'}))
 
-else:
-    st.error("❌ ไม่สามารถโหลดโมเดลได้ กรุณาลองใหม่อีกครั้ง")
+# ============================================================
+# Batch Prediction
+# ============================================================
+st.markdown("---")
+st.header("📂 ทำนายผลจากไฟล์ CSV")
+
+uploaded_file = st.file_uploader("อัปโหลดไฟล์ CSV", type=['csv'])
+
+if uploaded_file is not None:
+    try:
+        df_input = pd.read_csv(uploaded_file)
+        st.write(f"📄 ข้อมูลที่อัปโหลด: {df_input.shape[0]} แถว, {df_input.shape[1]} คอลัมน์")
+        st.dataframe(df_input.head())
+        
+        if st.button("🚀 ทำนายทั้งหมด", type="primary"):
+            with st.spinner("กำลังประมวลผล..."):
+                predictions = model.predict(df_input)
+                probabilities = model.predict_proba(df_input)
+            
+            df_result = df_input.copy()
+            df_result['Prediction'] = predictions
+            df_result['Pred_Label'] = df_result['Prediction'].map(
+                {0: 'Approved', 1: 'Default'}
+            )
+            df_result['Prob_Approved'] = probabilities[:, 0]
+            df_result['Prob_Default'] = probabilities[:, 1]
+            
+            st.success(f"✅ ทำนายเสร็จสิ้น! ({len(df_result)} รายการ)")
+            
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1:
+                st.metric("ทั้งหมด", len(df_result))
+            with col_s2:
+                approved = (df_result['Prediction'] == 0).sum()
+                st.metric("อนุมัติ", approved)
+            with col_s3:
+                default = (df_result['Prediction'] == 1).sum()
+                st.metric("ผิดนัด", default)
+            
+            st.dataframe(df_result)
+            
+            csv = df_result.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "💾 ดาวน์โหลดผลลัพธ์ (CSV)",
+                csv,
+                "prediction_results.csv",
+                "text/csv"
+            )
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาด: {e}")
+
+# ============================================================
+# Footer
+# ============================================================
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: gray;'>
+    <small>Built with ❤️ using Streamlit & Scikit-learn | SVM Model</small>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
